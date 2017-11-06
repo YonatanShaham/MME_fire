@@ -16,6 +16,9 @@ global torus:false {
 	
 	//meteorology
 	int wind<-45 min:0 max:359; //wind direction 0=to the east
+	list<float> wind_effect<-[1,0.75,0.5,0.3,0.2,0.3,0.5,0.75,1,0.75,0.5,0.3,0.2,0.3,0.5,0.75,1,0.75,0.5,0.3,0.2,0.3,0.5,0.75];
+	list<int> wind_sectors;
+	float bonus<-1.1;
 	float wind_speed<-8.3 min:0 max:1200 #m/#s; 
 	float pa<-1.205; //air density for brands at 20c
 	float cd<-1.005; //air heat capacity for brands at 20c
@@ -27,8 +30,8 @@ global torus:false {
 	int draft_sens<-65;  //sensetivity to wind for draft calculations, in degrees
 	float burning_speed<-1;
 	float impigement_range<-1;
-	string veg_type<-"shrub";// among:["shrub","trees_5m","trees_10m"];
-	float veg_front_burn_time<-120#s;// among:[300#s,240#s,180#s,120#s];
+	string veg_type<-"shrub";// among:["shrub","shrub-dry","trees_5m","trees_10m"];
+	float veg_front_burn_time<-300#s;// among:[300#s,240#s,180#s,120#s];
 	
 	float L_general<-16; //mean fuel load default
 	float trees_burn_range<-75 #m;
@@ -108,7 +111,8 @@ global torus:false {
 	building_line next_ignited_floor;
 	float time_to_next_building;
 	float d_to_next_building;
-	building_line next_ignited_building;
+	int angel_to_next_building;
+	string next_ignited_building;
 	bool polygons_recording<-false;
 	bool save_polygones<-false;
 	
@@ -134,6 +138,7 @@ global torus:false {
 		create door from: shape_doors_file with:[floor::1];
 		create window from: shape_windows_file with:[floor::1,width::float(read("width")),height::float(read("height")),heading::float(read("heading"))];
 		create building_line from:shape_buildings_file  with:[floor::int(1),UNIQ_ID::int(read("UNIQ_ID")),flame_roof::int(read("roof"))];
+		
 		
 		
 		write "number of buildings: "+length(building_line);
@@ -212,7 +217,7 @@ global torus:false {
 						float correction_ration<-Arf/calc_area;
 						dr<-dr*correction_ration^0.5;
 						wr<-wr*correction_ration^0.5;
-												
+											
 						if i=myself.floors and my_building.flame_roof=1 {
 							flame_roof<-true;
 						}
@@ -220,7 +225,7 @@ global torus:false {
 					}
 				}
 			} else {
-					if my_building.flame_roof=1 {
+				if my_building.flame_roof=1 {
 					flame_roof<-true;
 				}
 			}
@@ -290,13 +295,11 @@ global torus:false {
 		if report_init {write "SPAT rooms1 took :" + ((machine_time-init_time)/1000);}
 		init_time<-machine_time;
 		
-		
 		ask building_line {my_rooms<-((room at_distance 10) where (each.floor=floor)) overlapping (self+0.1);}
 		if report_init {write "SPAT buildings took :" + ((machine_time-init_time)/1000);}
 		init_time<-machine_time;
 		ask window {
 			heading_check<-heading;
-			
 			internal_heading<-(one_of(my_room) towards self); //starting to caculate real heaing (GIS is only 0<90)
 			if heading<0 {heading<-heading+360;}
 			if heading=360 {heading<-0;} //end of caculating real heading
@@ -428,6 +431,49 @@ global torus:false {
 	reflex go {
 		sim_start<-machine_time;
 		step_time<-machine_time;
+		//Wind roses from (Albini, 1976)
+		if wind_speed=4{
+			wind_effect <- [1,0.57,0.28,0.18,0.16,0.18,0.28,0.57,1,0.57,0.28,0.18,0.16,0.18,0.28,0.57,1,0.57,0.28,0.18,0.16,0.18,0.28,0.57];
+			
+		}
+		
+		if wind_speed=6{
+			wind_effect <- [1,0.49,0.25,0.14,0.13,0.14,0.21,0.49,1,0.49,0.25,0.14,0.13,0.14,0.21,0.49,1,0.49,0.25,0.14,0.13,0.14,0.21,0.49];
+			
+		}
+		
+		if wind_speed=8{
+			wind_effect <- [1,0.25,0.09,0.04,0.04,0.04,0.09,0.25,1,0.25,0.09,0.04,0.04,0.04,0.09,0.25,1,0.25,0.09,0.04,0.04,0.04,0.09,0.25];
+			
+		}
+		
+		if veg_type="shrub"{
+			switch wind_speed{
+				match 4.0 {
+					burning_speed <- 0.011;
+				}
+				match 6.0 {
+					burning_speed <- 0.019;
+				}
+				match 8.0 {
+					burning_speed <- 0.027;
+				}
+			}
+		}
+		
+		if veg_type="shrub-dry"{
+			switch wind_speed{
+				match 4.0 {
+					burning_speed <- 0.016;
+				}
+				match 6.0 {
+					burning_speed <- 0.027;
+				}
+				match 8.0 {
+					burning_speed <- 0.052;
+				}
+			}
+		}
 		if time=0{
 			if go_serial{ //setting up ignition in ground floor apartments one by one
 				list<room> pot_rooms<-room where (each.apt_id=apts[to_explore] and each.floor=1 and length(each.my_windows)>0 and each.L>0);
@@ -452,53 +498,78 @@ global torus:false {
 						time_to_first_FO<-Lt30;
 						}		
 				}
-					loop times: ignitions {
-						ask one_of(room where (each.L>0 and length(each.my_windows)>0)) {
-							do ignite;
-							origin_of_fire<-UNIQ_ID;
-							room_name<-self;
-							floor_number<-floor;
-							}	
-						}		
-					}
+					
 			}
+		}
 		
 		
 		//trees burning
-		burning_area<-burning_area+burning_speed*step;
+		ask seg {do die;}
+		
+		wind_sectors <- nil;
+		loop i from:0 to:8*3{
+			int temp <-wind -360 + 45*(i) - 22;
+			
+			wind_sectors <- wind_sectors + temp;
+		}
+		
+		if burning_area!=nil{
+			list<point> seg_points <- points_on(burning_area.contour,1);
+			if length(seg_points)>10{
+				loop i from:0 to: length(seg_points)-2{
+				create seg number:1 {
+					shape <- line([seg_points[i],seg_points[i+1]]);
+				}
+				}
+				create seg number:1 {
+					shape <- line([last(seg_points),first(seg_points)]);
+				}
+			}
+		}
+		
+		//
+		ask seg{do set_perpendicular;}
+		list<point> targets <- seg collect each.target;
+		if length(targets)>8 {
+			
+			burning_area <- polygon(targets);
+		} else {
+			burning_area<-burning_area+burning_speed*step;
+		}
 		burning_area<-burning_area intersection impingemnt_area;
 		burning_windows<-nil;
 		if report_init {write "trees took :" + ((machine_time-sim_start)/1000);}
 		sim_start<-machine_time;
 		
 		//trees radiation
-		//Radiation !!!to complete!
 		
-			if veg_type="shrub" and veg_front_burn_time=300 {
-				veg_radiation_area_300s<-burning_area+3-geometry(building_line where (each.floor=1));
-				veg_radiation_area_300s<-veg_radiation_area_300s+0.1;
-			}
-			if veg_type="trees_5m"{
-				switch veg_front_burn_time{
-					match 120.0 {
-						veg_radiation_area_180s<-burning_area+7-geometry(building_line where (each.floor=1));
-						veg_radiation_area_120s<-burning_area+6-geometry(building_line where (each.floor=1));
-						veg_radiation_area_60s<-burning_area+5-geometry(building_line where (each.floor=1));
-						
-						veg_radiation_area_180s<-veg_radiation_area_180s+0.1;
-						veg_radiation_area_120s<-veg_radiation_area_120s+0.1;
-						veg_radiation_area_60s<-veg_radiation_area_60s+0.1;
-					}
+		if (veg_type="shrub" or veg_type="shrub-dry") and veg_front_burn_time=300 {
+			veg_radiation_area_300s<-burning_area+3-geometry(building_line where (each.floor=1));
+			veg_radiation_area_300s<-veg_radiation_area_300s+0.1;
+		}
+		if veg_type="trees_5m"{
+			switch veg_front_burn_time{
+				match 120.0 {
+					veg_radiation_area_180s<-burning_area+7-geometry(building_line where (each.floor=1));
+					veg_radiation_area_120s<-burning_area+6-geometry(building_line where (each.floor=1));
+					veg_radiation_area_60s<-burning_area+5-geometry(building_line where (each.floor=1));
+					
+					veg_radiation_area_180s<-veg_radiation_area_180s+0.1;
+					veg_radiation_area_120s<-veg_radiation_area_120s+0.1;
+					veg_radiation_area_60s<-veg_radiation_area_60s+0.1;
 				}
-			}	
+			}
+		}	
 		
 		
 		//trees ignition of windows
 		list<window> toched_by_fire <- window where (({each.location.x,each.location.y} overlaps burning_area) and (each.location.z<=tree_top*(1+1/3)));
 		ask toched_by_fire {ask my_room {do ignite;}}
 		list<window> not_effected_by_veg_rad <-window where (each.ignition_time_by_veg_rad=0 and each.location.z<=10);
+	
 		ask not_effected_by_veg_rad where (({each.location.x,each.location.y} overlaps veg_radiation_area_300s))  {do recive_rad_from_veg(300);}
 		ask not_effected_by_veg_rad where (({each.location.x,each.location.y} overlaps veg_radiation_area_180s)) {do recive_rad_from_veg(180);}
+	
 		ask not_effected_by_veg_rad where (({each.location.x,each.location.y} overlaps veg_radiation_area_120s)) {do recive_rad_from_veg(120);}
 		ask not_effected_by_veg_rad where (({each.location.x,each.location.y} overlaps veg_radiation_area_60s)) {do recive_rad_from_veg(60);}
 		
@@ -507,15 +578,17 @@ global torus:false {
 			if time>=ignition_time_by_veg_rad{
 				ask my_room[0] {do ignite;}
 				ignition_time_by_veg_rad<--1;
+				
 			}
 		}
 		if report_init {write "windows took :" + ((machine_time-sim_start)/1000);}
 		sim_start<-machine_time;
 		
 		
+		
 		if report_init {write "NON-BURNING rooms took :" + ((machine_time-sim_start)/1000);}
 		sim_start<-machine_time;
-		ask (room where each.burn) {do update;} //updating burning rooms
+		ask (room where each.burn) {do update;} 
 		if report_init {write "BURNING rooms took :" + ((machine_time-sim_start)/1000);}
 		sim_start<-machine_time;
 
@@ -555,6 +628,14 @@ global torus:false {
 		}
 		if max_buildings=ignitions and max(burning_buildings_series)>ignitions {
 			time_to_next_building<-time;
+			
+			room ignited <- room where ((each.burn) and each.UNIQ_ID!=origin_of_fire_building) closest_to point_of_origin;
+			write "ignited " + ignited;
+			next_ignited_building <- ignited.UNIQ_ID;
+			point new_building <- ignited;
+			d_to_next_building <- point_of_origin distance_to new_building;
+			angel_to_next_building <-  new_building towards point_of_origin  ;
+			write "First building ignited! origin: " + origin_of_fire_building + ", target: " + next_ignited_building + ", d: " + d_to_next_building + ", angel_to_next_building: "+angel_to_next_building; 
 		}
 		if max_floors=ignitions and max(burning_floor_series)>ignitions {
 			time_to_next_floor<-time;
@@ -566,6 +647,7 @@ global torus:false {
 		if report_init {write "STATS took :" + ((machine_time-sim_start)/1000);}
 		sim_start<-machine_time;
 		if report_init {write "ALL took :" + ((machine_time-step_time)/1000);}
+		
 		if report_init {write "----------";}
 		
 		if time>0 { //STOPPING simulation	
@@ -574,6 +656,45 @@ global torus:false {
 				do pause;
 			} 
 		}
+	}
+}
+
+species seg{
+	int secotr<--1;
+	point target;
+	float factor;
+	int angle;
+	int perpendicular;
+	
+	action set_perpendicular{
+		angle <- first(shape.points) towards last(shape.points);
+		perpendicular <- angle+90;
+		if perpendicular > 360 {perpendicular<-perpendicular-360;}
+		//set sector factor
+		float spread_length<-burning_speed*step;
+		int sector;
+		float sector_factor<-0;
+		loop i from:0 to:15{
+			if between(perpendicular,wind_sectors[i],wind_sectors[i+1])  {
+				
+				sector_factor <- wind_effect[i];
+				sector<-i;
+			}
+		}
+		if perpendicular<first(wind_sectors) and perpendicular>last(wind_sectors) {
+			write ""+self+" overloop";
+			sector_factor <- wind_effect[0];
+				sector<-0;
+		}
+		spread_length <- spread_length * sector_factor * bonus;
+		target <- self translated_by {spread_length*cos(perpendicular),spread_length*sin(perpendicular)};
+	}
+	
+	
+	
+	aspect base{
+		draw shape color:#blue;
+		draw polygon([first(shape.points),target,last(shape.points)]) color:#red;
 	}
 }
 
@@ -878,6 +999,7 @@ species room parent:element{
 			temperature<-Tr/2;
 		}
 		
+		//write ""+self+
 		do set_color;
 		
 		if burn and time>=burning_end {
@@ -918,6 +1040,7 @@ species room parent:element{
 	
 	user_command ignite_self {  //allows user to manually ignite the room
     	do ignite;
+    	point_of_origin <- self;
 	}
 	
 	aspect over_view{
@@ -1276,70 +1399,26 @@ species brand {
 }
 
 
-experiment loop_on_grounf_floor_apartments type:batch repeat:1   until: time>=60*60 {
+experiment serial_apts type:batch  repeat:1 until:time>=time_limit {
+	parameter var:time_limit <-1*#hour;
 	parameter "serial apt" category:"simulation" var:go_serial<-true;
-	parameter "serial building" category:"simulation" var:serial_building<-false;
+	parameter category:"simulation" var:ignitions<-1; 
 	parameter "step duartion (secondes)" category:"simulation" var:step<-60;
 	parameter "create trees?" category:"simulation" var:create_trees<-true;
 	parameter "floor_height" var:floor_height<-2.8;
 	parameter "balcony ratio" category:"window" var:balcony_ratio<-0.087;
 	parameter "trees buffer" category:"trees" var:trees_buffer<-0;
-	parameter "trees burning speed (meters/minutes)" category: "trees" var:burning_speed<-0.027 #m/#s;
 	parameter "trees burn range" category:"trees" var: trees_burn_range<-75 #m;
-	parameter "wind direction" category:"meteorology" var:wind<-0; //among:[45,135,180,225,270,315];
-	parameter "wind speed" category:"meteorology" var:wind_speed<-8;
+	parameter "wind direction" category:"meteorology" var:wind<-90; //among:[45,135,180,225,270,315];
+	parameter "wind speed" category:"meteorology" var:wind_speed among: [4.0,6.0,8.0];
 	parameter "vegetation type" category:"trees" var:veg_type<-"shrub";// among:["shrub","trees_5m","trees_10m"];
 	parameter "vegetation fron burning time (s)" category:"trees" var:veg_front_burn_time<-120#s ;//among:[300#s,240#s,180#s,120#s];
 	parameter "barnding probability" category: "fire" var:brand_prob<-0.1;
 	parameter "impigement range" category: "fire" var:impigement_range<-0.5;
 	parameter "fire load (wood kg/m2)" category:"fire" var:L_general<-16;
 	parameter "brand veg ignition factor" category:"fire" var:brand_veg_ignition_factor<-1/4;
-	parameter "output file" category:"output" var:output_file_name<-"../doc/output.csv";
+	parameter "output file" category:"output" var:output_file_name<-"../doc/results.csv";
 	parameter var:polygons_recording<-false;
-	parameter "CRS" category:"GIS" var:CRS<-"EPSG:2039"; //do not use unprojected coordinates
-	parameter "buildings footprints" category:"GIS" var:shape_buildings_file<-shape_file("../includes/city/city_buildings1.shp",CRS);
-	parameter "trees" category:"GIS" var:shape_trees_file<-shape_file("../includes/city/city_trees_fine_road_cut.shp",CRS);
-	parameter "bounds" category:"GIS" var:shape_bounds_file<-shape_file("../includes/city/city_bounds.shp",CRS);
-	parameter "rooms" category:"GIS" var:shape_rooms_file<-shape_file("../includes/new_city/rooms1.shp",CRS);
-	parameter "doors" category:"GIS" var:shape_doors_file<-shape_file("../includes/new_city/doors.shp",CRS);
-	parameter "windows" category:"GIS" var:shape_windows_file<-shape_file("../includes/new_city/windows.shp",CRS);
-	parameter category:"simulation" var:report_init<-false;
-	//serial run
-	parameter "to_explore" var:to_explore min:0 max:100 step:1; //max should be the (number of ground floor apartments -1)
-	
-	action _step_ {
-		ask simulations{
-			write "run took: " + ((machine_time-zero_time)/1000);
-			save(["MME model - ","simulated time:",(time),"PARAMETERS:",step,tune_factor,rooms_file,balcony_ratio,L_general,ignitions,to_explore,origin_of_fire,origin_of_fire_building,origin_of_fire_floor,wind_speed,wind,burning_speed,create_trees,trees_burn_range,impigement_range,tree_top,trees_buffer,veg_type,veg_front_burn_time,brand_prob,brand_veg_ignition_factor,"RESULTS :",veg_was_ignited,time_to_veg,brand_were_released,time_to_brands,ignited_by_rad,time_to_rad,time_to_first_FO,time_to_next_apt,time_to_next_floor,time_to_next_building,"MAXS :",max(burnt_area_series),max(burning_room_series),max(burning_apt_series),max(burning_floor_series),top_burning_floor,max(burning_buildings_series)]) rewrite:false type: "csv" to: output_file_name;
-			 if veg_was_ignited and polygons_recording {save projected_burn_area type:"shp" to:"../doc/city/tuned_proj/projections_building"+to_explore+".shp"  with:[timing::'timing'];}
-		}	
-	}
-}
-
-
-
-
-	
-experiment regular_display type:gui {
-	parameter category:"simulation" var:report_init<-true;
-	parameter category:"simulation" var:ignitions<-0; 
-	parameter "serial" category:"simulation" var:serial<-0;
-	parameter "step duartion (secondes)" category:"simulation" var:step<-60;
-	parameter "create trees?" category:"simulation" var:create_trees<-true;
-	parameter "output file" category:"simulation" var:output_file_name<-"../doc/batch_rooms.csv";
-	parameter "floor_height" var:floor_height<-2.8;
-	parameter "balcony ratio" category:"window" var:balcony_ratio<-0.087;
-	parameter "trees buffer" category:"trees" var:trees_buffer<-0;
-	parameter "vegetation type" category:"trees" var:veg_type<-"shrub" among:["shrub","trees_5m","trees_10m"];
-	parameter "vegetation fron burning time (s)" category:"trees" var:veg_front_burn_time<-120#s among:[300#s,240#s,180#s,120#s];
-	parameter "trees burning speed (meters/s)" category: "trees" var:burning_speed<-0.011 #m/#s;
-	parameter "trees burn range" category:"trees" var: trees_burn_range<-75 #m;
-	parameter "wind direction" category:"meteorology" var:wind<-0;
-	parameter "wind speed" category:"meteorology" var:wind_speed<-4;
-	parameter "barnding probability" category: "fire" var:brand_prob<-0.1;
-	parameter "impigement range" category: "fire" var:impigement_range<-0.5;
-	parameter "fire load (wood kg/m2)" category:"fire" var:L_general<-16;
-	parameter "brand veg ignition factor" category:"fire" var:brand_veg_ignition_factor<-1/4;
 	parameter "CRS" category:"GIS" var:CRS<-"EPSG:2039"; //do not use unprojected coordinates
 	parameter "buildings footprints" category:"GIS" var:shape_buildings_file<-shape_file("../includes/city/city_buildings1.shp",CRS);
 	parameter "trees" category:"GIS" var:shape_trees_file<-shape_file("../includes/city/city_trees_fine.shp",CRS);
@@ -1347,6 +1426,53 @@ experiment regular_display type:gui {
 	parameter "rooms" category:"GIS" var:shape_rooms_file<-shape_file("../includes/new_city/rooms1.shp",CRS);
 	parameter "doors" category:"GIS" var:shape_doors_file<-shape_file("../includes/new_city/doors.shp",CRS);
 	parameter "windows" category:"GIS" var:shape_windows_file<-shape_file("../includes/new_city/windows.shp",CRS);
+	parameter category:"simulation" var:report_init<-false;
+	//serial run:
+	parameter "to_explore" var:to_explore min:0 max:1613 step:1; //max should be the (number of ground floor apartments -1) or (number of buildings -1)
+	
+	action _step_ {
+		ask simulations{
+			write ""+self+" run took: " + ((machine_time-zero_time)/1000);
+			//write output:
+			write ["MME model - ","simulated time:",(time),"PARAMETERS:",step,tune_factor,rooms_file,shape_trees_file.name,balcony_ratio,L_general,ignitions,to_explore,origin_of_fire,origin_of_fire_building,origin_of_fire_floor,wind_speed,wind,burning_speed,create_trees,trees_burn_range,impigement_range,tree_top,trees_buffer,veg_type,veg_front_burn_time,brand_prob,brand_veg_ignition_factor,"RESULTS :",veg_was_ignited,time_to_veg,brand_were_released,time_to_brands,ignited_by_rad,time_to_rad,time_to_first_FO,time_to_next_apt,time_to_next_floor,next_ignited_building,time_to_next_building,d_to_next_building,angel_to_next_building,"MAXS :",max(burnt_area_series),max(burning_room_series),max(burning_apt_series),max(burning_floor_series),top_burning_floor,max(burning_buildings_series)];
+			//save output:
+			save(["MME model - ","simulated time:",(time),"PARAMETERS:",step,tune_factor,rooms_file,shape_trees_file.name,balcony_ratio,L_general,ignitions,to_explore,origin_of_fire,origin_of_fire_building,origin_of_fire_floor,wind_speed,wind,burning_speed,create_trees,trees_burn_range,impigement_range,tree_top,trees_buffer,veg_type,veg_front_burn_time,brand_prob,brand_veg_ignition_factor,"RESULTS :",veg_was_ignited,time_to_veg,brand_were_released,time_to_brands,ignited_by_rad,time_to_rad,time_to_first_FO,time_to_next_apt,time_to_next_floor,next_ignited_building,time_to_next_building,d_to_next_building,angel_to_next_building,"MAXS :",max(burnt_area_series),max(burning_room_series),max(burning_apt_series),max(burning_floor_series),top_burning_floor,max(burning_buildings_series)]) type: "csv" to: output_file_name rewrite:false;
+			/*allows saving fire spread in vegetation*/ if veg_was_ignited and polygons_recording {save projected_burn_area type:"shp" to:"../doc/city/tuned_proj/projections_building_case_"+to_explore+".shp"  with:[timing::'timing'];}
+		}	
+	}
+	
+	
+}
+
+
+	
+experiment regular_display type:gui {
+	parameter var:time_limit <-1*#hour;
+	parameter category:"simulation" var:report_init<-false;
+	parameter category:"simulation" var:ignitions<-1; 
+	parameter "serial" category:"simulation" var:serial<-0;
+	parameter "step duartion (secondes)" category:"simulation" var:step<-60;
+	parameter "create trees?" category:"simulation" var:create_trees<-false; //change to 'true'
+	parameter "output file" category:"simulation" var:output_file_name<-"../doc/results.csv";
+	parameter "floor_height" var:floor_height<-2.8;
+	parameter "balcony ratio" category:"window" var:balcony_ratio<-0.087;
+	parameter "trees buffer" category:"trees" var:trees_buffer<-0;
+	parameter "vegetation type" category:"trees" var:veg_type<-"shrub" among:["shrub","shrub-dry","trees_5m","trees_10m"];
+	parameter "vegetation fron burning time (s)" category:"trees" var:veg_front_burn_time<-120#s among:[300#s,240#s,180#s,120#s];
+	parameter "trees burn range" category:"trees" var: trees_burn_range<-75 #m;
+	parameter "wind direction" category:"meteorology" var:wind<-90;
+	parameter "wind speed" category:"meteorology" var:wind_speed among:[4.0,6,8];
+	parameter "barnding probability" category: "fire" var:brand_prob<-0.1;
+	parameter "impigement range" category: "fire" var:impigement_range<-0.5;
+	parameter "fire load (wood kg/m2)" category:"fire" var:L_general<-16;
+	parameter "brand veg ignition factor" category:"fire" var:brand_veg_ignition_factor<-1/4;
+	parameter "CRS" category:"GIS" var:CRS<-"EPSG:2039"; //do not use unprojected coordinates
+	parameter "buildings footprints" category:"GIS" var:shape_buildings_file<-shape_file("../includes/algorithm/sample_building_lines.shp",CRS);
+	// not trees file for the algorithm sample. Use your own: parameter "trees" category:"GIS" var:shape_trees_file<-shape_file("../includes/city/city_trees_fine.shp",CRS);
+	parameter "bounds" category:"GIS" var:shape_bounds_file<-shape_file("../includes/sample_bounds.shp",CRS);
+	parameter "rooms" category:"GIS" var:shape_rooms_file<-shape_file("../includes/algorithm/sample_rooms.shp",CRS);
+	parameter "doors" category:"GIS" var:shape_doors_file<-shape_file("../includes/algorithm/sample_doors.shp",CRS);
+	parameter "windows" category:"GIS" var:shape_windows_file<-shape_file("../includes/algorithm/sample_windows.shp",CRS);
 	output{
 		
 		display fast_over_view type:opengl {
@@ -1355,12 +1481,17 @@ experiment regular_display type:gui {
 			species window aspect: base_3D;
 			species roof_flame aspect: base_3D;
 			graphics name:"burnin trees"{
+			
 				draw burning_area  color:#pink ;
+				
+				
 				draw trees depth: tree_top empty:true border: #green color:#green;	
 			}
 		}
 		
-				
+		
+		
+		
 		display development {
 			chart "burning/burnt down" type: series size: {1,1/2} position: {0, 0} legend_font_size:15 label_font_size:15 tick_font_size:15{
 				 datalist ["apts","floors","buildings"] value:[last(burning_apt_series),last(burning_floor_series),last(burning_buildings_series)] color:[#blue,#green,#brown];
@@ -1382,11 +1513,15 @@ experiment regular_display type:gui {
 			species brand aspect:base;
 			species projected_burn_area aspect:base;
 			graphics name:"burnin trees" transparency: 0.5{
+			
+				
 				draw veg_radiation_area_60s color:#red;
 				draw veg_radiation_area_120s color:#darkred;
 				draw veg_radiation_area_180s color:#gold ;
 				draw veg_radiation_area_300s color:#brown;
-				draw burning_area color:#black;	
+				draw burning_area color:#black;
+				
+				
 			}
 		}
 		
